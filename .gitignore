@@ -1,0 +1,36 @@
+# Binaries
+bin/
+/surfbot-cli
+*.exe
+
+# Test artifacts
+coverage.out
+coverage.html
+*.test
+*.out
+
+# Goreleaser
+dist/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Go
+vendor/
+
+# Claude Code
+CLAUDE.md
+.claude/
+
+# Local config / secrets
+.env
+.env.local
+*.token

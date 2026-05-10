@@ -1,0 +1,72 @@
+version: 2
+
+project_name: surfbot-cli
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: surfbot-cli
+    main: ./cmd/surfbot-cli
+    binary: surfbot-cli
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.ShortCommit}}
+      - -X main.buildDate={{.Date}}
+
+archives:
+  - id: surfbot-cli
+    ids:
+      - surfbot-cli
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    formats:
+      - tar.gz
+    files:
+      - LICENSE
+      - README.md
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+
+release:
+  github:
+    owner: surfbot-io
+    name: surfbot-cli
+  draft: false
+  prerelease: auto
+  mode: replace
+  header: |
+    # surfbot-cli {{ .Tag }}
+
+    Cloud-bridge endpoint for Surfbot. See
+    [ADR-004](https://github.com/surfbot-io/surfbot-strategy) and
+    [SPEC-CLI1](https://github.com/surfbot-io/surfbot-strategy) for
+    architecture and rollout details.
