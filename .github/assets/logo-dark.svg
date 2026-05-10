@@ -1,0 +1,13 @@
+<svg viewBox="0 0 240 64" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Surfbot">
+  
+  <g>
+    <rect x="20" y="4" width="4" height="7" rx="1.5" ry="1.5" fill="#FFFFFF"></rect>
+    <rect x="40" y="4" width="4" height="7" rx="1.5" ry="1.5" fill="#FFFFFF"></rect>
+    <rect x="9" y="23" width="4" height="8" rx="1.5" fill="#FFFFFF"></rect>
+    <rect x="51" y="23" width="4" height="8" rx="1.5" fill="#FFFFFF"></rect>
+    <path d="M16 10 H48 A4 4 0 0 1 52 14 V44&#xA;             C 48.5 44, 48.5 49, 42.667 49&#xA;             C 36.833 49, 36.833 44, 32 44&#xA;             C 27.167 44, 27.167 49, 21.333 49&#xA;             C 15.5 49, 15.5 44, 12 44&#xA;             V14 A4 4 0 0 1 16 10 Z" fill="#FFFFFF"></path>
+    <rect x="21" y="24" width="6" height="6" rx="0.5" fill="#05308C"></rect>
+    <rect x="37" y="24" width="6" height="6" rx="0.5" fill="#05308C"></rect>
+  </g>
+  <text x="76" y="42" font-family="Inter, ui-sans-serif, system-ui, -apple-system, sans-serif" font-weight="700" font-size="32" letter-spacing="-0.8" fill="#FFFFFF">Surfbot</text>
+</svg>
