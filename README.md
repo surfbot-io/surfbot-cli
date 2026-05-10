@@ -1,55 +1,38 @@
-# surfbot-cli
+<p align="center">
+  <a href="https://surfbot.io">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset=".github/assets/logo-dark.svg">
+      <img src=".github/assets/logo.svg" alt="Surfbot" width="280">
+    </picture>
+  </a>
+</p>
 
-> Cloud-bridge endpoint for Surfbot — no embedded scanners.
+<p align="center">
+  <strong>Endpoint binary for the Surfbot platform.</strong>
+  <br>
+  The reasoning layer that closes the loop between detection and response.
+</p>
 
-[![CI](https://github.com/surfbot-io/surfbot-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/surfbot-io/surfbot-cli/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+<p align="center">
+  <a href="https://github.com/surfbot-io/surfbot-cli/actions/workflows/ci.yml"><img src="https://github.com/surfbot-io/surfbot-cli/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
+  <a href="https://surfbot.io"><img src="https://img.shields.io/badge/surfbot.io-website-05308C.svg" alt="surfbot.io"></a>
+</p>
 
-`surfbot-cli` is the on-host endpoint for the Surfbot cloud platform. It
-maintains a persistent WebSocket connection to `api.surfbot.io` and
-executes whatever the cloud dispatches inside a local sandbox. Detection
-logic, scheduling, and findings storage live in the cloud.
+---
 
-## Tombstone — supersedes `surfbot-agent`
+`surfbot-cli` is the on-host binary that connects your infrastructure to the
+Surfbot platform. Once enrolled, it maintains a persistent, mutually
+authenticated channel to Surfbot's control plane, advertises the host's
+capabilities, and executes the workflows the platform dispatches inside a
+local sandbox. Detection logic, scheduling, and findings storage live in
+the platform — the binary stays small, sandboxed, and easy to audit.
 
-This binary supersedes [`surfbot-agent`](https://github.com/surfbot-io/surfbot-agent)
-(archived 2026-05-10). The agent shipped scanners, scheduler, and a local
-SQLite findings store inside the binary; that architecture is gone.
+## Install
 
-The rationale and the new boundary live in **ADR-004 — surfbot-cli
-cloud-bridge** in the (private) `surfbot-strategy` repo. Short version:
-shipping detection logic to every host turned every release into a
-fleet-wide upgrade and made the security surface unmanageable. The cloud
-owns logic and state; the endpoint owns presence and execution.
+### Build from source
 
-## Status
-
-**Bootstrap — PR0 of Sprint CLI1.** Only `surfbot-cli version` is wired.
-The runtime (WebSocket transport, device-code enrollment, daemon) ships
-across PR1..PR6.
-
-| PR  | Scope                                              |
-| --- | -------------------------------------------------- |
-| PR0 | Repo scaffold, CI, release pipeline (this commit). |
-| PR1 | WebSocket client + reconnect/backoff.              |
-| PR2 | Device-code enrollment flow.                       |
-| PR3 | Sandbox executor for cloud-dispatched jobs.        |
-| PR4 | Heartbeat, capability advertisement, status RPCs.  |
-| PR5 | `login` / `enroll` / `status` / `logout` commands. |
-| PR6 | Daemon install/uninstall (systemd, launchd, SCM).  |
-
-## Quick start
-
-```sh
-surfbot-cli version
-```
-
-`login`, `enroll`, `status`, and `logout` arrive in PR5. Daemon
-install/uninstall arrives in PR6.
-
-## Build from source
-
-Requires Go 1.25+.
+Requires [Go 1.25](https://go.dev/dl/) or later.
 
 ```sh
 git clone https://github.com/surfbot-io/surfbot-cli.git
@@ -58,24 +41,37 @@ make build
 ./bin/surfbot-cli version
 ```
 
-`make test` runs the unit tests. `make lint` runs `golangci-lint`.
+The binary cross-compiles cleanly to **Linux**, **macOS**, and **Windows**
+on `amd64` and `arm64`. Each combination is verified on every push by the
+CI pipeline.
 
-## Architecture & design docs
+## Usage
 
-- **ADR-004 — surfbot-cli cloud-bridge** — boundary, threat model,
-  rollout. Lives in the private `surfbot-strategy` repo.
-- **SPEC-CLI1 — WebSocket transport + device-code enrollment** —
-  protocol, state machine, command surface (§10), PR plan (§13). Lives
-  in the private `surfbot-strategy` repo.
+```sh
+surfbot-cli --help
+```
 
-The strategy repo is internal; if you need access for audit or
-integration work, contact `security@surfbot.io`.
+For platform setup, host enrollment, and operator guidance, see the
+[Surfbot documentation](https://surfbot.io).
 
-## License
+## Development
 
-MIT — see [LICENSE](LICENSE).
+| Target           | Description                              |
+| ---------------- | ---------------------------------------- |
+| `make build`     | Produce the binary at `./bin/surfbot-cli`. |
+| `make test`      | Run the test suite with `-race`.         |
+| `make lint`      | Run `golangci-lint`.                     |
+| `make tidy`      | Run `go mod tidy`.                       |
+| `make clean`     | Remove build artifacts.                  |
+
+Run targets from the repository root.
 
 ## Security
 
-Report vulnerabilities to `security@surfbot.io`. Please do not open
-public issues for security reports.
+Please report vulnerabilities privately to
+[security@surfbot.io](mailto:security@surfbot.io). Do not disclose
+security issues through public GitHub issues.
+
+## License
+
+`surfbot-cli` is released under the [MIT License](LICENSE) — © 2026 Surfbot.
