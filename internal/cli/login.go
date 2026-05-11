@@ -177,7 +177,16 @@ func pollDeviceToken(
 }
 
 // verifyConnection opens the WS, waits for server.hello, then disconnects.
-// Used by `login` to confirm the freshly-enrolled token actually works.
+// Used by `login` and `enroll` to confirm the freshly-issued token actually
+// works against the live server before reporting success to the operator.
+//
+// HOTFIX H7: a server that responds with 4401/4403 on the very first
+// handshake (DB desync, server-side bug shipping a dead token) used to be
+// swallowed as success — the user saw "Authorized" while the token was
+// already poisoned. Now we purge the local token + metadata and surface a
+// hard error so the operator can retry. Transient errors (network, timeout,
+// pinning warnings) are still swallowed because the token may still be
+// valid and `surfbot-cli status` can re-probe later.
 func verifyConnection(ctx context.Context, out io.Writer, wsURL, token, agentID, hostname string, skipPin bool) error {
 	fp, err := transport.Fingerprint()
 	if err != nil {
@@ -186,6 +195,11 @@ func verifyConnection(ctx context.Context, out io.Writer, wsURL, token, agentID,
 		pf(out, "(could not derive fingerprint: %v)\n", err)
 		fp = ""
 	}
+	dir, dirErr := transport.DefaultConfigDir()
+	if dirErr != nil {
+		return fmt.Errorf("config dir: %w", dirErr)
+	}
+	store := transport.NewTokenStoreAt(dir)
 	client := &transport.WSClient{
 		URL:         wsURL,
 		Token:       token,
@@ -195,6 +209,8 @@ func verifyConnection(ctx context.Context, out io.Writer, wsURL, token, agentID,
 		Hostname:    hostname,
 		Fingerprint: fp,
 		SkipPinning: skipPin,
+		// Intentionally NOT wiring TokenStore here: we want to control the
+		// purge ourselves to also wipe the metadata file alongside.
 		Logger: func(level, msg string, kv ...any) {
 			// Silent by default; surface warns only.
 			if level == "warn" {
@@ -216,11 +232,30 @@ func verifyConnection(ctx context.Context, out io.Writer, wsURL, token, agentID,
 		return nil
 	default:
 	}
-	if err != nil && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
-		pf(out, "(connection verification failed: %v)\n", err)
-		return nil // do not fail enrollment because verification failed
+	if err == nil {
+		return nil
 	}
-	return nil
+	switch {
+	case errors.Is(err, transport.ErrTokenInvalid), errors.Is(err, transport.ErrTokenRevoked):
+		// Hard failure: the freshly-issued token is dead. Purge to avoid
+		// shipping a poisoned credential the daemon would loop on forever.
+		_ = store.Delete()
+		_ = transport.DeleteMetadata(dir)
+		return fmt.Errorf("server rejected the issued token on first connect (%w) — local token purged, please re-run", err)
+	case errors.Is(err, transport.ErrOrgSuspended):
+		return fmt.Errorf("organization suspended on first connect (%w) — token kept; re-enable in dashboard then retry", err)
+	case errors.Is(err, transport.ErrInsecureScheme):
+		// Server returned an http/ws ws_url and we're not in skip-pinning
+		// mode. Token is on disk but unusable — purge it.
+		_ = store.Delete()
+		_ = transport.DeleteMetadata(dir)
+		return fmt.Errorf("server returned insecure ws_url (%w) — local token purged", err)
+	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):
+		return nil
+	default:
+		pf(out, "(connection verification failed: %v; token kept, run `surfbot-cli status` to retry)\n", err)
+		return nil
+	}
 }
 
 // tokenPrefix returns the 13-char prefix logged + persisted to metadata.

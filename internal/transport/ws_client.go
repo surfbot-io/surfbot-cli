@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"math/rand/v2"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -23,18 +24,67 @@ import (
 // surfaces these to the caller so cobra commands can map them to exit codes
 // and token-purge actions.
 const (
-	closeCodeTokenRevoked  = 4401
-	closeCodeTokenInvalid  = 4403
-	closeCodeRateLimited   = 4429
-	closeCodeOrgSuspended  = 4503
-	defaultHeartbeatInt    = 30 * time.Second
-	heartbeatIntMin        = 5 * time.Second
-	heartbeatIntMax        = 300 * time.Second
-	handshakeTimeout       = 10 * time.Second
-	writeTimeout           = 10 * time.Second
-	stableConnectionWindow = 5 * time.Minute
-	backoffJitter          = 0.25
+	closeCodeTokenRevoked = 4401
+	closeCodeTokenInvalid = 4403
+	closeCodeRateLimited  = 4429
+	closeCodeOrgSuspended = 4503
+	defaultHeartbeatInt   = 30 * time.Second
+	heartbeatIntMin       = 5 * time.Second
+	heartbeatIntMax       = 300 * time.Second
+	handshakeTimeout      = 10 * time.Second
+	writeTimeout          = 10 * time.Second
+	backoffJitter         = 0.25
 )
+
+// stableConnectionWindow is the duration a single conn must hold open
+// before the next disconnect resets the backoff attempt counter. SPEC §6.4
+// suggests 5 min; declared as a var (not const) so tests can shrink it.
+var stableConnectionWindow = 5 * time.Minute
+
+// requireSecureScheme rejects plaintext ws://, http:// schemes on
+// non-loopback hosts. The skipPinning escape hatch (the existing
+// --insecure-skip-pinning flag, already a "knowingly insecure" gesture) is
+// accepted as the operator-explicit override for dev clusters that haven't
+// yet provisioned TLS.
+//
+// Loopback hosts (127.0.0.0/8, ::1, localhost) are always allowed: tests
+// and `surfbot-cli` running side-by-side with a dev `surfbot-api` over
+// http never need pinning, and forcing wss in unit tests would gratuitously
+// require generating a CA chain per test.
+func requireSecureScheme(rawURL string, skipPinning bool) error {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("parse url: %w", err)
+	}
+	switch u.Scheme {
+	case "wss", "https":
+		return nil
+	case "ws", "http":
+		// fall through to loopback / skip-pinning gating
+	default:
+		return fmt.Errorf("%w: unsupported scheme %q in %s", ErrInsecureScheme, u.Scheme, rawURL)
+	}
+	if isLoopbackHost(u.Hostname()) {
+		return nil
+	}
+	if skipPinning {
+		return nil
+	}
+	return fmt.Errorf("%w: scheme %q on host %q (use --insecure-skip-pinning to override on dev clusters)", ErrInsecureScheme, u.Scheme, u.Hostname())
+}
+
+// isLoopbackHost recognizes localhost, 127.0.0.0/8, ::1. Used to whitelist
+// the test/dev path through the plaintext-scheme gate without weakening the
+// production check.
+func isLoopbackHost(host string) bool {
+	if host == "" || host == "localhost" {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		return true
+	}
+	return false
+}
 
 // Sentinel errors the caller distinguishes on.
 //
@@ -61,6 +111,14 @@ type WSClient struct {
 	Hostname    string
 	Fingerprint string
 
+	// TokenStore, when non-nil, is purged automatically when the server
+	// closes the connection with code 4401 (token revoked) or 4403 (token
+	// invalid). SPEC §6.3.6 mandates token deletion in both cases — the
+	// hotfix for CRITICAL #1 wires this through to the WSClient so daemon
+	// and one-shot commands share the same purge path. Callers that don't
+	// want auto-purge (tests, dry-run probes) leave this nil.
+	TokenStore *TokenStore
+
 	// Hooks the caller fills in. Optional.
 	OnServerHello func(ServerHelloPayload)
 	OnConnect     func()
@@ -69,7 +127,12 @@ type WSClient struct {
 	Logger        func(level, msg string, kv ...any)
 
 	// Pinning toggle. When true, the cert pinning is bypassed (the
-	// --insecure-skip-pinning flag). Logged loudly on Run() entry.
+	// --insecure-skip-pinning flag). The same flag also unlocks insecure
+	// transport schemes (ws://, http://) on non-loopback hosts — the CRITICAL
+	// #4 hotfix rejects insecure schemes by default to prevent MITM token
+	// leak, but operators with a dev cluster need an explicit override and
+	// this flag is already the documented "I know what I'm doing" gesture.
+	// Logged loudly on Run() entry.
 	SkipPinning bool
 
 	// Internal heartbeat handle exposed so `status` can capture the last
@@ -108,38 +171,73 @@ func (c *WSClient) log(level, msg string, kv ...any) {
 	c.Logger(level, msg, kv...)
 }
 
+// fastReconnectDelay is the post-1001 / post-server.shutdown delay per
+// SPEC §6.3.5: the server is announcing a planned restart, so we skip the
+// exponential ladder and try again almost immediately. Holding it as a
+// package var (not const) lets tests dial it down without round-tripping
+// through the public API.
+var fastReconnectDelay = 50 * time.Millisecond
+
 // Run drives the lifecycle: dial → handshake → loop → reconnect with
 // backoff. Returns nil on caller-initiated ctx cancellation, or one of the
 // sentinel errors on a non-recoverable close. Recoverable errors (network
 // flap, 1001 going_away, 1006 abnormal_closure, etc.) are absorbed and the
 // loop reconnects.
+//
+// CRITICAL hotfixes wired in here (PR #5 review):
+//   - C1: on ErrTokenRevoked / ErrTokenInvalid, purge TokenStore before return.
+//   - C2: on close 1001 / errServerShutdown, use 50ms fast reconnect.
+//   - C3: reset backoff attempt counter when the connection stayed up >5min;
+//     the reset condition is gated on connectedAt (set inside runOnce after
+//     server.hello), not on a post-sleep timestamp like the original.
 func (c *WSClient) Run(ctx context.Context) error {
 	if c.SkipPinning {
 		c.log("warn", "cert pinning bypassed via --insecure-skip-pinning")
 	}
 	attempt := 0
-	var lastConnect time.Time
 	for {
 		if ctx.Err() != nil {
 			return nil
 		}
-		// Reset attempt counter after a long-stable connection.
-		if !lastConnect.IsZero() && time.Since(lastConnect) > stableConnectionWindow {
-			attempt = 0
-		}
-		err := c.runOnce(ctx)
+		// connectedAt is filled in by runOnce once server.hello is received,
+		// so reading it here after the call tells us how long this attempt
+		// actually held a live conn. A long-stable connection (>5min) wipes
+		// the attempt counter so a later flap restarts at delay=1s, not 60s.
+		var connectedAt time.Time
+		err := c.runOnceTracked(ctx, &connectedAt)
 		if err == nil {
 			// ctx cancellation propagated as nil — return cleanly.
 			return nil
 		}
 
-		if errors.Is(err, ErrTokenRevoked) || errors.Is(err, ErrTokenInvalid) || errors.Is(err, ErrOrgSuspended) {
+		if !connectedAt.IsZero() && time.Since(connectedAt) > stableConnectionWindow {
+			attempt = 0
+		}
+
+		if errors.Is(err, ErrTokenRevoked) || errors.Is(err, ErrTokenInvalid) {
+			c.purgeToken(err)
+			return err
+		}
+		if errors.Is(err, ErrOrgSuspended) {
+			return err
+		}
+		if errors.Is(err, ErrInsecureScheme) {
+			// No retry can make a plaintext URL on a remote host safe; bubble
+			// up so the caller surfaces it to the operator (and, post-enroll,
+			// can purge the seeded token).
 			return err
 		}
 
-		// Backoff selection. server.shutdown was already converted to a
-		// short delay via the close-code path (1001 → fast-reconnect 50ms).
-		delay := backoffFor(attempt, errors.Is(err, ErrRateLimited))
+		// Backoff selection. server.shutdown / 1001 → fast-reconnect 50ms.
+		var delay time.Duration
+		switch {
+		case errors.Is(err, errServerShutdown), websocket.CloseStatus(err) == websocket.StatusGoingAway:
+			delay = fastReconnectDelay
+		case errors.Is(err, ErrRateLimited):
+			delay = backoffFor(attempt, true)
+		default:
+			delay = backoffFor(attempt, false)
+		}
 		attempt++
 		c.log("info", "ws reconnect scheduled", "attempt", attempt, "delay", delay.String(), "err", err.Error())
 		if c.OnReconnect != nil {
@@ -150,14 +248,57 @@ func (c *WSClient) Run(ctx context.Context) error {
 			return nil
 		case <-time.After(delay):
 		}
-		lastConnect = time.Now()
 	}
 }
+
+// purgeToken deletes the on-disk token when the server explicitly invalidated
+// it. Best-effort: a Delete failure is logged but does not block the sentinel
+// from bubbling up — the operator still needs to know the token is dead.
+func (c *WSClient) purgeToken(reason error) {
+	if c.TokenStore == nil {
+		return
+	}
+	if err := c.TokenStore.Delete(); err != nil {
+		c.log("warn", "token purge failed", "reason", reason.Error(), "err", err.Error())
+		return
+	}
+	c.log("info", "token purged after server revoke/invalid", "reason", reason.Error())
+}
+
+// runOnceTracked is runOnce + an out-parameter that captures the moment the
+// connection became live (server.hello received). Keeps Run's reset logic
+// clean without exporting the timestamp.
+func (c *WSClient) runOnceTracked(ctx context.Context, connectedAt *time.Time) error {
+	prev := c.OnConnect
+	c.OnConnect = func() {
+		*connectedAt = time.Now()
+		if prev != nil {
+			prev()
+		}
+	}
+	defer func() { c.OnConnect = prev }()
+	return c.runOnce(ctx)
+}
+
+// ErrInsecureScheme is returned by runOnce when the configured ws_url uses
+// a plaintext scheme on a non-loopback host without --insecure-skip-pinning.
+// SPEC §6.1 requires `wss`; rejecting plaintext closes the MITM vector where
+// a hostile token-issuance response could swap `wss://api...` for
+// `ws://attacker...` and leak the agent_token in cleartext over the first
+// frame's Authorization header.
+var ErrInsecureScheme = errors.New("transport: refusing to connect over plaintext scheme")
 
 // runOnce performs a single connect-handshake-loop cycle. Returns the
 // classified error; the outer loop in Run decides whether to back off or
 // surface it.
 func (c *WSClient) runOnce(ctx context.Context) error {
+	if err := requireSecureScheme(c.URL, c.SkipPinning); err != nil {
+		// Fatal: there is no retry that makes plaintext safe. Log once,
+		// return immediately. The caller surfaces this to the user.
+		c.log("error", "refusing insecure ws_url", "url", c.URL, "err", err.Error())
+		return err
+	}
+
 	dialCtx, cancel := context.WithTimeout(ctx, handshakeTimeout)
 	defer cancel()
 
@@ -208,10 +349,14 @@ func (c *WSClient) runOnce(ctx context.Context) error {
 	defer loopCancel()
 
 	var wg sync.WaitGroup
-	wg.Add(1)
+	wg.Add(2)
 	go func() {
 		defer wg.Done()
 		c.runHeartbeats(loopCtx, conn, interval)
+	}()
+	go func() {
+		defer wg.Done()
+		c.runPings(loopCtx, conn, interval/2)
 	}()
 
 	err = c.readLoop(loopCtx, conn, interval)
@@ -368,6 +513,35 @@ func (c *WSClient) runHeartbeats(ctx context.Context, conn *websocket.Conn, inte
 			return
 		}
 		c.lastBeat.store(time.Now())
+	}
+}
+
+// runPings drives native WebSocket ping/pong control frames every
+// interval/2 per SPEC §6.5. coder/websocket's Ping() blocks until either a
+// matching pong arrives or the ctx deadline elapses, so a hung server
+// (silent NAT timeout, half-open conn) trips this watchdog before the
+// envelope-heartbeat path would. A single failed ping closes the conn with
+// policy_violation; the read loop then exits and the outer Run reconnects.
+func (c *WSClient) runPings(ctx context.Context, conn *websocket.Conn, interval time.Duration) {
+	if interval <= 0 {
+		return
+	}
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			pingCtx, cancel := context.WithTimeout(ctx, interval)
+			err := conn.Ping(pingCtx)
+			cancel()
+			if err != nil {
+				c.log("info", "ws ping failed (forcing reconnect)", "err", err.Error())
+				_ = conn.Close(websocket.StatusPolicyViolation, "ping timeout")
+				return
+			}
+		}
 	}
 }
 

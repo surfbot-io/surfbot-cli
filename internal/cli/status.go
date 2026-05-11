@@ -68,15 +68,20 @@ func runStatus(cmd *cobra.Command, _ []string) error {
 	default:
 		ctx, cancel := context.WithTimeout(cmd.Context(), 10*time.Second)
 		defer cancel()
-		ok, intervalSec, probeErr := probeWS(ctx, meta.WSURL, token, meta.AgentID, meta.Hostname, flagStatusSkipPin)
+		ok, intervalSec, probeErr := probeWS(ctx, meta.WSURL, token, meta.AgentID, meta.Hostname, flagStatusSkipPin, store)
 		switch {
 		case ok:
 			statusLine = "online"
 			hbInterval = intervalSec
 		case errors.Is(probeErr, transport.ErrTokenRevoked):
-			statusLine = "revoked"
+			// HOTFIX C1 — WSClient already purged the token file via the
+			// TokenStore handle we passed; also wipe the metadata sibling so
+			// the next `status` reports "no agent enrolled".
+			_ = transport.DeleteMetadata(dir)
+			statusLine = "revoked (local token purged)"
 		case errors.Is(probeErr, transport.ErrTokenInvalid):
-			statusLine = "token-invalid"
+			_ = transport.DeleteMetadata(dir)
+			statusLine = "token-invalid (local token purged)"
 		default:
 			statusLine = "offline"
 		}
@@ -110,11 +115,15 @@ func printStatus(out io.Writer, statusLine string, m *transport.AgentMetadata, e
 
 // probeWS opens a WS handshake, waits for server.hello, then disconnects.
 // Returns (true, interval, nil) on success; surfaces revoke/invalid sentinels
-// distinctly so the caller can render a specific status.
+// distinctly so the caller can render a specific status. Wires the supplied
+// TokenStore so close 4401/4403 triggers automatic on-disk purge inside the
+// WSClient — the caller still gets the sentinel back to render the right
+// status line, but the file is gone by the time runStatus returns.
 func probeWS(
 	ctx context.Context,
 	wsURL, token, agentID, hostname string,
 	skipPin bool,
+	store *transport.TokenStore,
 ) (bool, int, error) {
 	fp, _ := transport.Fingerprint()
 	client := &transport.WSClient{
@@ -126,6 +135,7 @@ func probeWS(
 		Hostname:    hostname,
 		Fingerprint: fp,
 		SkipPinning: skipPin,
+		TokenStore:  store,
 		Logger:      func(string, string, ...any) {},
 	}
 	intervalCh := make(chan int, 1)

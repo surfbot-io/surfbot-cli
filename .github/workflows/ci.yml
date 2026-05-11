@@ -45,3 +45,35 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
         run: go build -o surfbot-cli-${{ matrix.goos }}-${{ matrix.goarch }} ./cmd/surfbot-cli
+
+  # HOTFIX H5: hard gate on the cert-pin placeholder canary.
+  # The `prod` build tag activates internal/transport/pinning_prod_check.go
+  # whose init() panics if any host in hostPins still contains a PLACEHOLDER
+  # marker. Right now this job is expected to FAIL (pins are still
+  # placeholders); we keep it visible-but-non-blocking so reviewers see the
+  # gap on every PR. Flip `continue-on-error` to `false` in the same PR
+  # that commits the real SPKI hashes.
+  prod-pin-check:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build + run with -tags prod (placeholder canary)
+        run: |
+          set +e
+          # The canary lives in internal/transport/pinning_prod_check.go
+          # init(). go build won't trip it (compile-time check is not
+          # possible against a map literal), so we build a test binary
+          # under -tags prod and invoke it; init() panics on placeholders
+          # before any test can run, surfacing the violation here.
+          out=$(go test -tags prod -run NonExistent ./internal/transport/... 2>&1)
+          rc=$?
+          if [ $rc -ne 0 ]; then
+            echo "::warning::Placeholder SPKI pins still in tree — replace before first prod release:"
+            echo "$out"
+            exit $rc
+          fi
+          echo "OK: all pins are real."
