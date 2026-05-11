@@ -14,10 +14,14 @@ import (
 	"github.com/surfbot-io/surfbot-cli/internal/transport"
 )
 
-var flagLogoutAPIBase string
+var (
+	flagLogoutAPIBase         string
+	flagLogoutInsecureSkipPin bool
+)
 
 func init() {
 	logoutCmd.Flags().StringVar(&flagLogoutAPIBase, "api-base", "", "Override base URL of surfbot-api (defaults to host inferred from agent.json's ws_url)")
+	logoutCmd.Flags().BoolVar(&flagLogoutInsecureSkipPin, "insecure-skip-pinning", false, "Bypass public-key pinning on the REST endpoint (NOT for production)")
 	rootCmd.AddCommand(logoutCmd)
 }
 
@@ -60,7 +64,7 @@ func runLogout(cmd *cobra.Command, _ []string) error {
 	if base == "" {
 		base = DefaultAPIBaseURL
 	}
-	api := newAPIClient(base, Version)
+	api := newAPIClient(base, Version, flagLogoutInsecureSkipPin)
 	reqCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	if err := api.postBearer(reqCtx, "/cli/logout", token, nil, nil); err != nil {

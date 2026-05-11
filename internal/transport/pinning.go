@@ -50,6 +50,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 )
 
 // ErrPinMismatch is returned by VerifyPeerCertificate when none of the certs
@@ -74,11 +75,19 @@ var hostPins = map[string][]string{
 
 // PinValidator verifies peer certs against the host pin list. Zero value is
 // not usable; construct via NewPinValidator.
+//
+// The optional Log field receives a one-shot info-level emission of every
+// observed SPKI hash when the validator is in placeholder fail-open mode.
+// This is the seam that lets operators discover the production hash to paste
+// into hostPins without scraping `openssl s_client` output by hand.
 type PinValidator struct {
 	host    string
 	pins    []string
 	skip    bool
 	allowed bool
+
+	Log     func(level, msg string, kv ...any)
+	logOnce sync.Once
 }
 
 // NewPinValidator returns a validator for the given host. When skip is true,
@@ -132,9 +141,10 @@ func (v *PinValidator) VerifyPeerCertificate(rawCerts [][]byte, _ [][]*x509.Cert
 		return fmt.Errorf("%w: no pins registered for host %q", ErrPinMismatch, v.host)
 	}
 	if v.allowed {
-		// Placeholders present: log the observed hash so operators can rotate
-		// pins via release notes, but never block. Real rejection happens
-		// once looksReal(pins) returns true.
+		// Placeholders present: log the observed hash once per validator so
+		// operators can paste it into hostPins on rotation, but never block.
+		// Real rejection kicks in once looksReal(pins) returns true.
+		v.logObservedOnce(rawCerts)
 		return nil
 	}
 	for _, raw := range rawCerts {
@@ -157,6 +167,25 @@ func (v *PinValidator) VerifyPeerCertificate(rawCerts [][]byte, _ [][]*x509.Cert
 func spkiSHA256(cert *x509.Certificate) []byte {
 	sum := sha256.Sum256(cert.RawSubjectPublicKeyInfo)
 	return sum[:]
+}
+
+// logObservedOnce emits the SPKI SHA-256 of every cert in the chain on the
+// first call. Caller invariant: only call when v.Log may be non-nil and
+// v.allowed is true (i.e. placeholder fail-open mode).
+func (v *PinValidator) logObservedOnce(rawCerts [][]byte) {
+	if v.Log == nil {
+		return
+	}
+	v.logOnce.Do(func() {
+		for i, raw := range rawCerts {
+			cert, err := x509.ParseCertificate(raw)
+			if err != nil {
+				continue
+			}
+			got := "sha256/" + base64.StdEncoding.EncodeToString(spkiSHA256(cert))
+			v.Log("info", "observed SPKI hash (placeholder pinning)", "host", v.host, "chain_index", i, "spki", got)
+		}
+	})
 }
 
 // PinForHost returns the registered pin list for a host. Exported for tests.

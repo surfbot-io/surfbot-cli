@@ -232,19 +232,20 @@ func (c *WSClient) httpClient() (*http.Client, error) {
 	}
 	host := u.Hostname()
 	// Only attach pinning for wss/https. Plain ws/http (local dev) skip pinning entirely.
-	transport := http.DefaultTransport
+	rt := http.DefaultTransport
 	if u.Scheme == "wss" || u.Scheme == "https" {
 		validator := NewPinValidator(host, c.SkipPinning, true)
-		transport = &http.Transport{
+		validator.Log = c.log
+		rt = &http.Transport{
 			TLSHandshakeTimeout: handshakeTimeout,
 			TLSClientConfig: &tls.Config{
-				MinVersion:            tls.VersionTLS12,
+				MinVersion:            tls.VersionTLS13,
 				VerifyPeerCertificate: validator.VerifyPeerCertificate,
 			},
 			ForceAttemptHTTP2: true,
 		}
 	}
-	return &http.Client{Transport: transport, Timeout: 0}, nil
+	return &http.Client{Transport: rt, Timeout: 0}, nil
 }
 
 // classifyHandshakeError maps HTTP status codes on the handshake response

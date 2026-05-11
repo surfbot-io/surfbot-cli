@@ -20,12 +20,13 @@ import (
 //   - replies with the configured server.hello payload
 //   - then either closes with the configured code or stays open until ctx done
 type helloHandler struct {
-	t            *testing.T
-	helloPayload ServerHelloPayload
-	closeCode    websocket.StatusCode
-	closeReason  string
-	holdOpen     time.Duration
-	clientHello  chan ClientHelloPayload
+	t                  *testing.T
+	helloPayload       ServerHelloPayload
+	sendServerShutdown *ServerShutdownPayload // when set, sent after server.hello before closing
+	closeCode          websocket.StatusCode
+	closeReason        string
+	holdOpen           time.Duration
+	clientHello        chan ClientHelloPayload
 }
 
 func (h *helloHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -63,6 +64,15 @@ func (h *helloHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := conn.Write(ctx, websocket.MessageText, resp); err != nil {
+		return
+	}
+	if h.sendServerShutdown != nil {
+		shutdown, err := NewEnvelope(TypeServerShutdown, *h.sendServerShutdown)
+		if err == nil {
+			_ = conn.Write(ctx, websocket.MessageText, shutdown)
+		}
+		// Wait briefly for the client's clean close, then exit.
+		_, _, _ = conn.Read(ctx)
 		return
 	}
 	if h.closeCode != 0 {
@@ -220,6 +230,29 @@ func TestBackoffFor_RateLimitedDoubles(t *testing.T) {
 	d := backoffFor(0, true)
 	if d < 3*time.Second || d > 5*time.Second {
 		t.Fatalf("rate-limited backoff out of range: %v", d)
+	}
+}
+
+func TestWSClient_ServerShutdown_TriggersReconnect(t *testing.T) {
+	url, cleanup := newHelloServer(t, &helloHandler{
+		t: t,
+		helloPayload: ServerHelloPayload{
+			SessionID:                "sess_test",
+			HeartbeatIntervalSeconds: 5,
+		},
+		sendServerShutdown: &ServerShutdownPayload{
+			Reason:                   "deploy",
+			EstimatedDowntimeSeconds: 10,
+		},
+	})
+	defer cleanup()
+
+	c := &WSClient{URL: url, Token: "x", AgentID: "ag", Hostname: "h", Fingerprint: "sha256:f"}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	err := c.runOnce(ctx)
+	if !errors.Is(err, errServerShutdown) {
+		t.Fatalf("err = %v, want errServerShutdown", err)
 	}
 }
 

@@ -55,7 +55,7 @@ func runEnroll(cmd *cobra.Command, args []string) error {
 		pf(out, "(warning: could not derive fingerprint: %v)\n", fpErr)
 	}
 
-	api := newAPIClient(flagEnrollAPIBase, Version)
+	api := newAPIClient(flagEnrollAPIBase, Version, flagEnrollInsecureSkipPin)
 	var resp enrollResp
 	req := enrollReq{
 		EnrollmentToken: token,

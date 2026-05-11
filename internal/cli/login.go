@@ -49,7 +49,7 @@ func runLogin(cmd *cobra.Command, _ []string) error {
 	defer stop()
 
 	hostname, _ := os.Hostname()
-	api := newAPIClient(flagAPIBase, Version)
+	api := newAPIClient(flagAPIBase, Version, flagInsecureSkipPin)
 
 	// 1. POST /cli/device/code.
 	var resp deviceCodeResp

@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,23 +13,40 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/surfbot-io/surfbot-cli/internal/transport"
 )
 
 // apiClient is a thin wrapper around net/http for the cli's REST calls into
-// surfbot-api. It does NOT pin the cert here — the WS client owns pinning;
-// REST goes through the system trust store (HTTPS, same hostname, same
-// underlying TLS chain). If MITM hardening on REST becomes a concern we
-// surface it via a shared transport.PinValidator.
+// surfbot-api. It pins the cert via transport.PinValidator (same fail-open
+// canary as the WS client) so the token-issuing endpoints (/cli/device/token,
+// /cli/enroll) get the same MITM protection as the post-issuance WS channel.
 type apiClient struct {
 	baseURL string
 	http    *http.Client
 	ua      string
 }
 
-func newAPIClient(baseURL, version string) *apiClient {
+// newAPIClient builds the REST client. When baseURL is HTTPS, attaches a
+// shared transport.PinValidator (skip-pinning honored, fail-open while pins
+// are placeholders, strict once Andrew commits real hashes). HTTP scheme
+// (local dev / httptest) bypasses pinning entirely.
+func newAPIClient(baseURL, version string, skipPinning bool) *apiClient {
+	rt := http.DefaultTransport
+	if u, err := url.Parse(baseURL); err == nil && u.Scheme == "https" {
+		validator := transport.NewPinValidator(u.Hostname(), skipPinning, true)
+		rt = &http.Transport{
+			TLSHandshakeTimeout: 10 * time.Second,
+			TLSClientConfig: &tls.Config{
+				MinVersion:            tls.VersionTLS13,
+				VerifyPeerCertificate: validator.VerifyPeerCertificate,
+			},
+			ForceAttemptHTTP2: true,
+		}
+	}
 	return &apiClient{
 		baseURL: strings.TrimRight(baseURL, "/"),
-		http:    &http.Client{Timeout: 30 * time.Second},
+		http:    &http.Client{Timeout: 30 * time.Second, Transport: rt},
 		ua:      fmt.Sprintf("surfbot-cli/%s (%s/%s)", version, runtime.GOOS, runtime.GOARCH),
 	}
 }

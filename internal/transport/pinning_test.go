@@ -91,3 +91,33 @@ func TestPinning_UnknownHost_FailsClosed(t *testing.T) {
 		t.Fatalf("unknown host with strict mode should reject")
 	}
 }
+
+func TestPinning_PlaceholderAllow_LogsObservedHashOnce(t *testing.T) {
+	cert, der := mustGenCert(t)
+	want := "sha256/" + base64.StdEncoding.EncodeToString(spkiSHA256(cert))
+
+	var emissions int
+	var captured string
+	v := NewPinValidator("api.surfbot.io", false, true) // placeholder mode
+	v.Log = func(_, _ string, kv ...any) {
+		emissions++
+		for i := 0; i+1 < len(kv); i += 2 {
+			if k, ok := kv[i].(string); ok && k == "spki" {
+				if s, ok := kv[i+1].(string); ok {
+					captured = s
+				}
+			}
+		}
+	}
+	for i := 0; i < 5; i++ {
+		if err := v.VerifyPeerCertificate([][]byte{der}, nil); err != nil {
+			t.Fatalf("placeholder mode should accept: %v", err)
+		}
+	}
+	if emissions != 1 {
+		t.Fatalf("emissions = %d, want exactly 1 (sync.Once)", emissions)
+	}
+	if captured != want {
+		t.Fatalf("logged spki = %q, want %q", captured, want)
+	}
+}
