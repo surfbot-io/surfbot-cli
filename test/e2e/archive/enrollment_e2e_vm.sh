@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+# ARCHIVED 2026-05-11 — replaced by Docker + Chrome MCP runbook.
+# Kept for reference for VM-based validation (one-off Hetzner / EC2
+# / bare metal runs). The default e2e path is now
+# `test/e2e/e2e-runbook.md`, orchestrated by Claude Code.
+#
 # E2E test for surfbot-cli enrollment + lifecycle.
 #
 # Implements the 12-step Definition-of-Done checklist from SPEC-CLI1
