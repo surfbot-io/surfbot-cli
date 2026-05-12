@@ -93,23 +93,34 @@ When the cloud revokes the agent (close `4401`) or rejects its token
 (`4403`), the daemon purges the on-disk token + metadata and exits; the
 operator re-enrolls with `surfbot-cli login` and starts the service again.
 
-## Verification
+## Verification (e2e)
 
 End-to-end verification follows the 12-step Definition of Done from
-SPEC-CLI1 §15. The script lives at `test/e2e/enrollment_e2e.sh` and is
-designed for a fresh VM (Hetzner / EC2 / a local Linux VM).
+SPEC-CLI1 §15. It is orchestrated by Claude Code via the runbook at
+[`test/e2e/e2e-runbook.md`](test/e2e/e2e-runbook.md), running
+`surfbot-cli` inside a local Docker container (systemd-enabled,
+privileged) while the Chrome MCP plugin drives the three browser
+confirmation steps against `app-staging.surfbot.io`. No external VM
+required.
 
-```sh
-export BINARY=./bin/surfbot-cli             # or absolute path
-./test/e2e/enrollment_e2e.sh
-```
+Pre-flight:
 
-The script combines automated checks (`[PASS]` / `[FAIL]`) with three
-manual confirmation steps that require a browser session against
-`https://app-staging.surfbot.io` (login confirmation, revoke from the
-dashboard, fresh enrollment token generation). Individual steps can be
-skipped with `SKIP_NETWORK=1`, `SKIP_REVOKE=1`, `SKIP_BAD=1` env vars.
-Exit code is `0` iff every non-skipped automated check passed.
+- Docker running locally.
+- Chrome MCP plugin connected to the browser.
+- An active session logged in to <https://app-staging.surfbot.io>.
+
+Then in a Cowork or Claude Code session with both available:
+
+> Execute the e2e validation per `test/e2e/e2e-runbook.md` for the
+> current `bin/surfbot-cli` build.
+
+Claude Code reads the runbook, spins up the container, drives the
+browser steps via Chrome MCP, and aggregates the per-step `[PASS]` /
+`[FAIL]` markers into a final report. Exit non-zero if any step fails.
+
+The legacy bash-script + manual-VM workflow is preserved at
+[`test/e2e/archive/enrollment_e2e_vm.sh`](test/e2e/archive/enrollment_e2e_vm.sh)
+for one-off validation on real VMs (Hetzner / EC2 / bare metal).
 
 ## Development
 
